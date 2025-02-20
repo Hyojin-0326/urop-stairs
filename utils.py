@@ -1,5 +1,4 @@
 import numpy as np
-import yolo
 import cv2
 import pyrealsense2 as rs
 import torch
@@ -10,41 +9,58 @@ def pixel_to_3d(u, v, depth_val, fx, fy, cx, cy):
     Y = (v - cy) * depth_val / fy
     Z = depth_val
     return X, Y, Z
-    
-# def stairs(bbox):
-#     angle =
-#     height = 
-#     distance = 
 
 #----------------- 데이터 로드 함수
+def load_rgb_from_bin(bin_path, frame_idx, height=480, width=640):
+    meta_path="/home/hjkwon/urop-stairs/data/meta.txt"
+
+    # 🔹 1) meta.txt에서 프레임 개수 읽기
+    try:
+        with open(meta_path, "r") as f:
+            total_frames = int(f.readline().strip())  # 첫 번째 줄에 저장된 프레임 개수 읽기
+    except FileNotFoundError:
+        raise FileNotFoundError(f"❌ 메타데이터 파일 {meta_path}을 찾을 수 없습니다!")
+    except ValueError:
+        raise ValueError(f"❌ {meta_path}에서 프레임 개수를 읽을 수 없습니다!")
+
+    # 🔹 2) frame_idx가 유효한지 확인
+    if frame_idx >= total_frames or frame_idx < 0:
+        raise ValueError(f"⚠️ frame_idx {frame_idx}가 유효하지 않습니다! (총 {total_frames}개 프레임)")
+
+    # 🔹 3) .bin 파일에서 RGB 데이터 로드
+    try:
+        rgb_data = np.fromfile(bin_path, dtype=np.uint8)
+
+        # 전체 데이터가 (total_frames, H, W, 3) 크기인지 확인
+        expected_size = total_frames * height * width * 3
+        if len(rgb_data) != expected_size:
+            raise ValueError(f"❌ RGB 데이터 크기 불일치! 예상 {expected_size}, 실제 {len(rgb_data)}")
+
+        # 🔹 4) (프레임 개수, H, W, 3) 형태로 reshape
+        rgb_data = rgb_data.reshape((total_frames, height, width, 3))
+
+        # 🔹 5) frame_idx에 해당하는 프레임 반환
+        rgb_image = rgb_data[frame_idx]
+
+    except Exception as e:
+        raise RuntimeError(f"❌ RGB .bin 파일을 로드하는 중 오류 발생: {e}")
+
+    return rgb_image
+
+
 
 def align_depth_to_rgb(depth_bin_path, rgb_bin_path, frame_idx, height=480, width=640):
-    """
-    Realsense 장비가 연결되어 있으면 정렬된 Depth & RGB 프레임을 가져오고,
-    연결되지 않았을 경우 .bin 파일에서 불러온 데이터를 반환하는 함수.
-
-    Parameters
-    ----------
-    depth_bin_path : str
-        - Depth .bin 파일 경로
-    rgb_bin_path : str
-        - RGB .bin 파일 경로
-    frame_idx : int
-        - 가져올 프레임 인덱스
-    height : int, default=480
-        - 프레임 높이 (Realsense 기본값)
-    width : int, default=640
-        - 프레임 너비 (Realsense 기본값)
-
-    Returns
-    -------
-    depth_map : np.ndarray (H, W) (float32)
-        - RGB 기준으로 정렬된 Depth Map (또는 .bin에서 불러온 Depth Map)
-    rgb_image : np.ndarray (H, W, 3) (uint8)
-        - RGB 이미지 (BGR)
-    """
     context = rs.context()
     devices = context.query_devices()
+    meta_path = "/home/hjkwon/urop-stairs/data/meta.txt"
+    try:
+        with open(meta_path, "r") as f:
+            total_frames = int(f.readline().strip())  # 첫 줄에서 프레임 개수 읽기
+        print(f"🔹 meta.txt에서 읽은 프레임 개수: {total_frames}")
+    except FileNotFoundError:
+        raise FileNotFoundError(f"❌ 메타데이터 파일 {meta_path}을 찾을 수 없습니다!")
+    except ValueError:
+        raise ValueError(f"❌ {meta_path}에서 프레임 개수를 읽을 수 없습니다!")
 
     if len(devices) == 0:
         print("🔹 No device connected, using default intrinsics & loading from .bin files")
@@ -59,19 +75,14 @@ def align_depth_to_rgb(depth_bin_path, rgb_bin_path, frame_idx, height=480, widt
         intrinsics.coeffs = [0, 0, 0, 0, 0]  
         
         # --- .bin 파일에서 RGB & Depth 불러오기 ---
-        depth_data = np.fromfile(depth_bin_path, dtype=np.float32)
-        rgb_data = np.fromfile(rgb_bin_path, dtype=np.uint8)
+        depth_map = np.fromfile(depth_bin_path, dtype=np.float32)
+        depth_map = depth_map.reshape((total_frames, height, width))
+        depth_map = depth_map[frame_idx]
 
-        total_frames = len(depth_data) // (height * width)
+        rgb_image = load_rgb_from_bin(rgb_bin_path, frame_idx)
+
         if frame_idx >= total_frames:
             raise ValueError(f"⚠️ frame_idx {frame_idx}가 저장된 프레임 개수 {total_frames}보다 큼")
-
-        # 특정 프레임 추출
-        start_idx = frame_idx * height * width
-        depth_map = depth_data[start_idx : start_idx + (height * width)].reshape((height, width))
-        
-        start_idx = frame_idx * height * width * 3
-        rgb_image = rgb_data[start_idx : start_idx + (height * width * 3)].reshape((height, width, 3))
 
     else:
         try:
@@ -115,40 +126,73 @@ def align_depth_to_rgb(depth_bin_path, rgb_bin_path, frame_idx, height=480, widt
 
     return depth_map, rgb_image
 
+#--------중복박스 있는지 체크 
+def check_duplicate(results):
+    seen = set()
+    duplicates = False
+    for result in results:
+        if hasattr(result, "boxes") and result.boxes is not None:
+            for box in result.boxes:
+                cls_id = int(box.cls[0])
+                if cls_id in seen:
+                    duplicates = True
+                else:
+                    seen.add(cls_id)
+    return duplicates # 불리안 아웃풋임
+
+#------- 중복박스 없애고 가까운것만 반환
+def remove_extra_box(results, depth_map):
+    all_boxes = []  # 모든 바운딩 박스를 저장할 리스트
+
+    # YOLO 탐지 결과에서 모든 바운딩 박스 수집
+    for result in results:
+        for box in result.boxes:
+            bbox = tuple(map(int, box.xyxy[0]))  # 바운딩 박스 좌표 (x1, y1, x2, y2)
+            all_boxes.append(bbox)
+
+    # 탐지된 객체가 없으면 None 반환
+    if not all_boxes:
+        return None
+
+    # 전체 바운딩 박스 중 가장 가까운 것 하나 선택
+    closest_box = get_closest_box_with_depth(all_boxes, depth_map)
+
+    return closest_box
+
+
+def get_closest_box_with_depth(boxes, depth_map):
+    """ 가장 가까운 바운딩 박스를 선택 (최소 Depth 값 기준) """
+    min_depth = float("inf")
+    closest_box = None
+
+    for bbox in boxes:
+        x1, y1, x2, y2 = bbox
+        roi_depth = depth_map[y1:y2, x1:x2]  # ✅ ROI만 선택
+
+        # ✅ 0이 아닌 Depth 값이 있으면 최솟값 계산 (평균 대신 최소 사용)
+        valid_depths = roi_depth[roi_depth > 0]
+        if len(valid_depths) > 0:
+            min_roi_depth = np.min(valid_depths)  # ✅ 최소 Depth 값 사용
+            if min_roi_depth < min_depth:
+                min_depth = min_roi_depth
+                closest_box = bbox
+
+    return closest_box
 
 
 
-
-
-
+#-----------바운딩박스의 ROI 크롭하기
+def crop_roi(bbox, rgb_image, depth_map):
+    x1,y1,x2,y2 = bbox
+    rgb_roi = rgb_image[y1:y2, x1:x2, :]
+    depth_roi = depth_map[y1:y2, x1:x2]
+    return rgb_roi, depth_roi
 
 
 
 
 #-----------
 def segment_stairs_in_roi(color_img, bbox, model, device='cuda'):
-    """
-    세그멘테이션 모델을 사용하여, bbox 내 계단 영역을 마스킹하는 함수.
-    단, bbox를 세로로 3등분한 뒤, 하단 2/3만 세그멘테이션 수행하여 연산량을 줄임.
-
-    Params
-    ------
-    color_img: np.ndarray
-        - 원본 컬러 이미지 (H, W, 3) (BGR 또는 RGB)
-    bbox: (x1, y1, x2, y2)
-        - YOLO로부터 받은 계단 ROI 좌표
-    model: torch.nn.Module (예시)
-        - 세그멘테이션 PyTorch 모델(예: U-Net, DeepLab, etc.)
-    device: str
-        - 'cuda' 또는 'cpu'
-    
-    Returns
-    -------
-    mask_full: np.ndarray (H_roi, W_roi)
-        - ROI 전체 크기에 대응하는 세그멘테이션 마스크 (0=배경, 1=계단 ...)
-        - 상단 1/3 구간은 세그멘테이션을 수행하지 않았으므로 0(배경) 처리됨
-    """
-
     x1, y1, x2, y2 = bbox
     roi_color = color_img[y1:y2, x1:x2]  # ROI 추출
 

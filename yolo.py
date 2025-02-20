@@ -14,71 +14,17 @@ def load_model(model_path):
 
 def detect(model, image):
     if isinstance(image,str):
-        results = model(image)
+        #results = model.predict(image, device = "cuda")
+        results = model.predict(image)
     elif isinstance(image, np.ndarray):
         results = model.predict(image)
+        #results = model.predict(image, device = 'cuda')
+        
     else:
         raise ValueError("image는 파일 경로나 np array여야 함.")
     for result in results:
         print(result)
     return results
-
-
-
-
-def remove_redundant_boxes(results, depth_map):
-    """
-    YOLO 탐지 결과에서 각 클래스별로 가장 가까운 바운딩 박스 하나만 남김.
-    - results: YOLO 탐지 결과 (ultralytics YOLO output)
-    - depth_map: Depth 정보가 포함된 numpy 배열
-    반환값:
-    - {클래스 ID: 가장 가까운 바운딩 박스} 형태의 딕셔너리
-    """
-    class_boxes = {}  # {클래스 ID: 바운딩 박스 리스트}
-
-    # YOLO 탐지 결과를 클래스별로 정리
-    for result in results:
-        for box in result.boxes:
-            cls = int(box.cls[0])  # 클래스 ID 가져오기
-            bbox = tuple(map(int, box.xyxy[0]))  # 바운딩 박스 좌표 (x1, y1, x2, y2)
-
-            if cls not in class_boxes:
-                class_boxes[cls] = []  # 클래스 ID가 없으면 리스트 생성
-            
-            class_boxes[cls].append(bbox)  # 해당 클래스의 바운딩 박스 추가
-
-    # 클래스별로 가장 가까운 바운딩 박스만 남기기
-    filtered_roi = {}
-
-    for cls, boxes in class_boxes.items():
-        closest_box = get_closest_box_with_depth(boxes, depth_map)  # 가장 가까운 객체 선택
-        if closest_box:
-            filtered_roi[cls] = closest_box  # 필터링된 결과 저장
-
-    return filtered_roi # {클래스 ID: 가장 가까운 바운딩 박스}
-
-
-def get_closest_box_with_depth(boxes, depth_map):
-    """ Depth Map을 이용해 가장 가까운 바운딩 박스 선택 """
-    min_depth = float("inf")
-    closest_box = None
-
-    for bbox in boxes:
-        x1, y1, x2, y2 = bbox
-
-        # ROI(Region of Interest) 설정
-        roi_depth = depth_map[y1:y2, x1:x2]
-
-        # Depth 값이 0이 아닌 것들만 평균 계산 (일부 센서는 0이 없는 데이터)
-        valid_depths = roi_depth[roi_depth > 0]
-
-        if len(valid_depths) > 0:
-            avg_depth = np.mean(valid_depths)
-            if avg_depth < min_depth:  # 더 가까운 객체라면 갱신
-                min_depth = avg_depth
-                closest_box = bbox
-
-    return closest_box
 
 
 def measure_height(filtered_roi):
@@ -96,19 +42,6 @@ def measure_height(filtered_roi):
                 height[cls_id] = utils.some_other_height_function(bbox)
 
     return height
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
