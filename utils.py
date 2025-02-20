@@ -1,5 +1,9 @@
 import numpy as np
 import yolo
+import cv2
+import pyrealsense2 as rs
+import torch
+
 
 def pixel_to_3d(u, v, depth_val, fx, fy, cx, cy):
     X = (u - cx) * depth_val / fx
@@ -7,17 +11,121 @@ def pixel_to_3d(u, v, depth_val, fx, fy, cx, cy):
     Z = depth_val
     return X, Y, Z
     
-def stairs(bbox):
-    angle =
-    height = 
-    distance = 
+# def stairs(bbox):
+#     angle =
+#     height = 
+#     distance = 
+
+#----------------- 데이터 로드 함수
+
+def align_depth_to_rgb(depth_bin_path, rgb_bin_path, frame_idx, height=480, width=640):
+    """
+    Realsense 장비가 연결되어 있으면 정렬된 Depth & RGB 프레임을 가져오고,
+    연결되지 않았을 경우 .bin 파일에서 불러온 데이터를 반환하는 함수.
+
+    Parameters
+    ----------
+    depth_bin_path : str
+        - Depth .bin 파일 경로
+    rgb_bin_path : str
+        - RGB .bin 파일 경로
+    frame_idx : int
+        - 가져올 프레임 인덱스
+    height : int, default=480
+        - 프레임 높이 (Realsense 기본값)
+    width : int, default=640
+        - 프레임 너비 (Realsense 기본값)
+
+    Returns
+    -------
+    depth_map : np.ndarray (H, W) (float32)
+        - RGB 기준으로 정렬된 Depth Map (또는 .bin에서 불러온 Depth Map)
+    rgb_image : np.ndarray (H, W, 3) (uint8)
+        - RGB 이미지 (BGR)
+    """
+    context = rs.context()
+    devices = context.query_devices()
+
+    if len(devices) == 0:
+        print("🔹 No device connected, using default intrinsics & loading from .bin files")
+        intrinsics = rs.intrinsics()
+        intrinsics.width = width
+        intrinsics.height = height
+        intrinsics.ppx = 308.5001  # 기본 광학 중심 X (cx)
+        intrinsics.ppy = 246.4238  # 기본 광학 중심 Y (cy)
+        intrinsics.fx = 605.9815  # 기본 초점 거리 X (fx)
+        intrinsics.fy = 606.1337  # 기본 초점 거리 Y (fy)
+        intrinsics.model = rs.distortion.none  # 왜곡 없음
+        intrinsics.coeffs = [0, 0, 0, 0, 0]  
+        
+        # --- .bin 파일에서 RGB & Depth 불러오기 ---
+        depth_data = np.fromfile(depth_bin_path, dtype=np.float32)
+        rgb_data = np.fromfile(rgb_bin_path, dtype=np.uint8)
+
+        total_frames = len(depth_data) // (height * width)
+        if frame_idx >= total_frames:
+            raise ValueError(f"⚠️ frame_idx {frame_idx}가 저장된 프레임 개수 {total_frames}보다 큼")
+
+        # 특정 프레임 추출
+        start_idx = frame_idx * height * width
+        depth_map = depth_data[start_idx : start_idx + (height * width)].reshape((height, width))
+        
+        start_idx = frame_idx * height * width * 3
+        rgb_image = rgb_data[start_idx : start_idx + (height * width * 3)].reshape((height, width, 3))
+
+    else:
+        try:
+            print("✅ Realsense device detected, capturing frames...")
+            pipeline = rs.pipeline()
+            config = rs.config()
+            config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+            config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+            profile = pipeline.start(config)
+
+            # 카메라 Intrinsics 가져오기
+            color_profile = profile.get_stream(rs.stream.color)
+            intr = color_profile.as_video_stream_profile().get_intrinsics()
+            fx, fy, cx, cy = intr.fx, intr.fy, intr.ppx, intr.ppy
+
+            # Depth → RGB 정렬 수행
+            align_to = rs.stream.color
+            align = rs.align(align_to)
+
+            # 프레임 수집 및 정렬
+            frames = pipeline.wait_for_frames()
+            aligned_frames = align.process(frames)
+
+            depth_frame = aligned_frames.get_depth_frame()
+            color_frame = aligned_frames.get_color_frame()
+
+            if not depth_frame or not color_frame:
+                raise RuntimeError("⚠️ Failed to capture frames from Realsense.")
+
+            # numpy 배열 변환
+            depth_map = np.asanyarray(depth_frame.get_data()).astype(np.float32)
+            rgb_image = np.asanyarray(color_frame.get_data())
+
+            pipeline.stop()
+
+        except RuntimeError:
+            print("❌ No device connected (error during capture), using default intrinsics")
+            profile = None
+            depth_map = np.zeros((height, width), dtype=np.float32)  # 빈 Depth 맵 생성
+            rgb_image = np.zeros((height, width, 3), dtype=np.uint8)  # 빈 RGB 이미지 생성
+
+    return depth_map, rgb_image
+
+
+
+
+
+
+
+
+
 
 
 #-----------
-import cv2
-import torch
-import numpy as np
-
 def segment_stairs_in_roi(color_img, bbox, model, device='cuda'):
     """
     세그멘테이션 모델을 사용하여, bbox 내 계단 영역을 마스킹하는 함수.
