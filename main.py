@@ -23,11 +23,14 @@ else:
 
 ###### 연산량 감소를 위해 roi 크롭, (컬러/뎁스),H,W,채널 형식의 어레이로 반환
 rgb_roi, depth_roi = utils.crop_roi(bbox, rgb_image, depth_map)
-end_time = time.time()
-exe_time = end_time-start_time
-print(f'⏳{exe_time}초동안 실행')
+
 
 ###### ROI 내에서 탐지된 물체의 height 구하기 (5프레임동안 모아서 평균)
 
 
 
+
+
+end_time = time.time()
+exe_time = end_time-start_time
+print(f'⏳{exe_time}초동안 실행')
