@@ -2,6 +2,7 @@ import numpy as np
 import cv2
 import pyrealsense2 as rs
 import torch
+import stairs
 
 
 def pixel_to_3d(u, v, depth_val, fx, fy, cx, cy):
@@ -9,6 +10,11 @@ def pixel_to_3d(u, v, depth_val, fx, fy, cx, cy):
     Y = (v - cy) * depth_val / fy
     Z = depth_val
     return X, Y, Z
+
+#######❗❗❗❗❗ 수정필요, 위아래 픽셀로 높이재는거
+
+def diff_in_height():
+    return 0
 
 #----------------- 데이터 로드 함수
 def load_rgb_from_bin(bin_path, frame_idx, height=480, width=640):
@@ -119,7 +125,7 @@ def align_depth_to_rgb(depth_bin_path, rgb_bin_path, frame_idx, height=480, widt
             pipeline.stop()
 
         except RuntimeError:
-            print("❌ No device connected (error during capture), using default intrinsics")
+            print("No device connected (error during capture), using default intrinsics")
             profile = None
             depth_map = np.zeros((height, width), dtype=np.float32)  # 빈 Depth 맵 생성
             rgb_image = np.zeros((height, width, 3), dtype=np.uint8)  # 빈 RGB 이미지 생성
@@ -144,40 +150,42 @@ def check_duplicate(results):
 def remove_extra_box(results, depth_map):
     all_boxes = []  # 모든 바운딩 박스를 저장할 리스트
 
-    # YOLO 탐지 결과에서 모든 바운딩 박스 수집
+    # YOLO 탐지 결과에서 모든 바운딩 박스 수집 (클래스 ID 포함)
     for result in results:
         for box in result.boxes:
             bbox = tuple(map(int, box.xyxy[0]))  # 바운딩 박스 좌표 (x1, y1, x2, y2)
-            all_boxes.append(bbox)
+            cls_id = int(box.cls[0])  # 클래스 ID 가져오기
+            all_boxes.append((cls_id, bbox))  # (클래스 ID, 바운딩 박스) 저장
 
-    # 탐지된 객체가 없으면 None 반환
+    # 탐지된 객체가 없으면 (None, None) 반환
     if not all_boxes:
-        return None
+        return (None, None)
 
-    # 전체 바운딩 박스 중 가장 가까운 것 하나 선택
-    closest_box = get_closest_box_with_depth(all_boxes, depth_map)
-
-    return closest_box
+    # 가장 가까운 객체 찾기
+    return get_closest_box_with_depth(all_boxes, depth_map)
 
 
 def get_closest_box_with_depth(boxes, depth_map):
     """ 가장 가까운 바운딩 박스를 선택 (최소 Depth 값 기준) """
     min_depth = float("inf")
     closest_box = None
+    closest_cls_id = None
 
-    for bbox in boxes:
+    for cls_id, bbox in boxes:
         x1, y1, x2, y2 = bbox
-        roi_depth = depth_map[y1:y2, x1:x2]  # ✅ ROI만 선택
+        roi_depth = depth_map[y1:y2, x1:x2]  
 
-        # ✅ 0이 아닌 Depth 값이 있으면 최솟값 계산 (평균 대신 최소 사용)
+        # 0이 아닌 Depth 값이 있으면 최솟값 계산 
         valid_depths = roi_depth[roi_depth > 0]
         if len(valid_depths) > 0:
-            min_roi_depth = np.min(valid_depths)  # ✅ 최소 Depth 값 사용
+            min_roi_depth = np.min(valid_depths)  
             if min_roi_depth < min_depth:
                 min_depth = min_roi_depth
                 closest_box = bbox
+                closest_cls_id = cls_id  # 가장 가까운 박스의 클래스 ID 저장
 
-    return closest_box
+    return (closest_cls_id, closest_box) 
+
 
 
 
@@ -189,79 +197,19 @@ def crop_roi(bbox, rgb_image, depth_map):
     return rgb_roi, depth_roi
 
 
+#--------- 클래스 분류해서 함수 실행 ❗❗❗❗❗❗❗❗❗❗수정필요
+def measure_height(cls_id,rgb_roi, depth_roi, bbox,model):
+    if cls_id ==0:
+        stairs.measure_height(rgb_roi, depth_roi, bbox, model)
+    #❗디버깅용
+    print("높이 측정중")
 
 
-#-----------
-def segment_stairs_in_roi(color_img, bbox, model, device='cuda'):
-    x1, y1, x2, y2 = bbox
-    roi_color = color_img[y1:y2, x1:x2]  # ROI 추출
-
-    # --- 1) ROI를 세로로 3등분 ---
-    roi_h, roi_w = roi_color.shape[:2]
-    one_third = roi_h // 3  # 3등분 높이
-    # 하단 2/3 구간: (one_third, roi_h)
-    sub_roi_color = roi_color[one_third: , :]
-
-    # --- 2) 모델 입력 전처리(예시) ---
-    # 모델에 따라 Resize, Normalize 등이 필요할 수 있음
-    # 예: (H, W, 3) BGR -> (1, 3, H, W) RGB 텐서
-    sub_roi_rgb = cv2.cvtColor(sub_roi_color, cv2.COLOR_BGR2RGB)
-    sub_roi_tensor = torch.from_numpy(sub_roi_rgb).float().permute(2,0,1).unsqueeze(0)  # (1,3,h,w)
-    # 간단히 0~1 스케일링
-    sub_roi_tensor = sub_roi_tensor / 255.0
-    sub_roi_tensor = sub_roi_tensor.to(device)
-
-    # --- 3) 세그멘테이션 수행 ---
-    model.eval()
-    with torch.no_grad():
-        pred = model(sub_roi_tensor)  # (1, num_classes, h, w) 형태 가정
-        # 예: 채널 차원에서 argmax -> 클래스 맵
-        pred_mask = torch.argmax(pred, dim=1).squeeze(0)  # (h, w)
-    
-    sub_roi_mask = pred_mask.cpu().numpy().astype(np.uint8)  # 세그멘테이션 결과 (하단 2/3 구간)
-
-    # --- 4) 세그멘테이션 결과를 ROI 전체 크기에 맞춰 합치기 ---
-    # 상단 1/3 부분은 세그멘테이션을 수행하지 않았으므로 배경(0)으로 둠
-    mask_full = np.zeros((roi_h, roi_w), dtype=np.uint8)
-    mask_full[one_third: , :] = sub_roi_mask  # 하단 2/3 부분만 예측 결과 반영
-
-    return mask_full
 
 
-# ----------------------
-# 예시: 후속처리 (에지 검출 + 직선 검출) 함수
-# ----------------------
 
-def postprocess_stair_mask(mask_full):
-    """
-    세그멘테이션 마스크에서 계단 윤곽을 좀 더 깔끔하게 얻기 위한 후속 처리 예시
-    1) 모폴로지 연산
-    2) 에지 검출(Canny)
-    3) (선택) HoughLinesP로 계단 엣지 직선 검출
-    """
 
-    # 1) 모폴로지 연산으로 잡음 제거/채움
-    kernel = np.ones((3,3), np.uint8)
-    mask_clean = cv2.morphologyEx(mask_full, cv2.MORPH_OPEN, kernel, iterations=1)
-    mask_clean = cv2.morphologyEx(mask_clean, cv2.MORPH_CLOSE, kernel, iterations=1)
 
-    # 2) 에지 검출
-    # 세그멘테이션 마스크 자체가 0/1(or 0/255)이므로, 
-    # 윤곽선을 찾으려면 Canny를 적용하거나, cv2.findContours()도 가능
-    edges = cv2.Canny(mask_clean, 50, 150)
-
-    # 3) 직선 검출 (예시)
-    lines_p = cv2.HoughLinesP(
-        edges,
-        rho=1,
-        theta=np.pi/180,
-        threshold=30,
-        minLineLength=30,
-        maxLineGap=10
-    )
-
-    # 필요 시 lines_p를 후속 처리(병합/필터링) 후, 각도 계산 등에 활용
-    return edges, lines_p
 
 
 # ----------------------
@@ -292,10 +240,10 @@ if __name__ == "__main__":
 
     seg_model = dummy_model
 
-    mask_roi = segment_stairs_in_roi(color_img, yolo_bbox, seg_model, device=device)
+    mask_roi = stairs.segment_stairs_in_roi(color_img, yolo_bbox, seg_model, device=device)
     
     # 후속처리
-    edges, lines_p = postprocess_stair_mask(mask_roi)
+    edges, lines_p = stairs.postprocess_stair_mask(mask_roi)
 
     # 시각화 예시
     # ROI 영역만 시각화

@@ -27,22 +27,6 @@ def detect(model, image):
     return results
 
 
-def measure_height(filtered_roi):
-    height = {}
-
-    for cls_id in filtered_roi.keys():
-        if cls_id == 0:  # 계단 높이 측정
-            bbox = filtered_roi.get(cls_id)
-            if bbox:
-                height[cls_id] = utils.stairs(bbox)
-
-        elif cls_id == 1:  
-            bbox = filtered_roi.get(cls_id)
-            if bbox:
-                height[cls_id] = utils.some_other_height_function(bbox)
-
-    return height
-
 
 
 
