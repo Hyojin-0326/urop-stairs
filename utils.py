@@ -3,6 +3,7 @@ import cv2
 import pyrealsense2 as rs
 import torch
 import stairs
+import os
 
 
 def pixel_to_3d(u, v, depth_val, fx, fy, cx, cy):
@@ -18,7 +19,8 @@ def diff_in_height():
 
 #----------------- 데이터 로드 함수
 def load_rgb_from_bin(bin_path, frame_idx, height=480, width=640):
-    meta_path="/home/hjkwon/urop-stairs/data/meta.txt"
+    data_path = os.path.dirname(os.path.abspath(__file__))
+    meta_path = os.path.join(data_path, "data", "meta.txt")
 
     # 🔹 1) meta.txt에서 프레임 개수 읽기
     try:
@@ -58,7 +60,8 @@ def load_rgb_from_bin(bin_path, frame_idx, height=480, width=640):
 def align_depth_to_rgb(depth_bin_path, rgb_bin_path, frame_idx, height=480, width=640):
     context = rs.context()
     devices = context.query_devices()
-    meta_path = "/home/hjkwon/urop-stairs/data/meta.txt"
+    data_path = os.path.dirname(os.path.abspath(__file__))
+    meta_path = os.path.join(data_path, "data", "meta.txt")
     try:
         with open(meta_path, "r") as f:
             total_frames = int(f.readline().strip())  # 첫 줄에서 프레임 개수 읽기
