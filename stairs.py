@@ -44,40 +44,33 @@ def measure_height(rgb_roi, depth_roi, bbox,model):
 
 
 #-----------
-def segment_stairs_in_roi(color_img, bbox, model):
+def segment_stairs_in_roi(color_img, bbox, model, device):
     x1, y1, x2, y2 = bbox
     roi_color = color_img[y1:y2, x1:x2]  # ROI 추출
 
     # --- 1) ROI를 세로로 3등분 ---
     roi_h, roi_w = roi_color.shape[:2]
     one_third = roi_h // 3  # 3등분 높이
-    # 하단 2/3 구간: (one_third, roi_h)
     sub_roi_color = roi_color[one_third: , :]
 
-    # --- 2) 모델 입력 전처리(예시) ---
-    # 모델에 따라 Resize, Normalize 등이 필요할 수 있음
-    # 예: (H, W, 3) BGR -> (1, 3, H, W) RGB 텐서
+    # --- 2) 모델 입력 전처리 ---
     sub_roi_rgb = cv2.cvtColor(sub_roi_color, cv2.COLOR_BGR2RGB)
-    sub_roi_tensor = torch.from_numpy(sub_roi_rgb).float().permute(2,0,1).unsqueeze(0)  # (1,3,h,w)
-    # 간단히 0~1 스케일링
-    sub_roi_tensor = sub_roi_tensor / 255.0
-    sub_roi_tensor = sub_roi_tensor.to(device)
+    sub_roi_tensor = torch.from_numpy(sub_roi_rgb).float().permute(2,0,1).unsqueeze(0).to(device)  # (1,3,h,w)
+    sub_roi_tensor /= 255.0
 
-    # --- 3) 세그멘테이션 수행 ---
-    model.eval()
+    # --- 3) TensorRT 엔진을 통한 세그멘테이션 추론 ---
     with torch.no_grad():
-        pred = model(sub_roi_tensor)  # (1, num_classes, h, w) 형태 가정
-        # 예: 채널 차원에서 argmax -> 클래스 맵
+        pred = model(sub_roi_tensor)  # (1, num_classes, h, w) 가정
         pred_mask = torch.argmax(pred, dim=1).squeeze(0)  # (h, w)
     
-    sub_roi_mask = pred_mask.cpu().numpy().astype(np.uint8)  # 세그멘테이션 결과 (하단 2/3 구간)
+    sub_roi_mask = pred_mask.cpu().numpy().astype(np.uint8)
 
-    # --- 4) 세그멘테이션 결과를 ROI 전체 크기에 맞춰 합치기 ---
-    # 상단 1/3 부분은 세그멘테이션을 수행하지 않았으므로 배경(0)으로 둠
+    # --- 4) 결과를 원본 ROI 크기로 복원 ---
     mask_full = np.zeros((roi_h, roi_w), dtype=np.uint8)
-    mask_full[one_third: , :] = sub_roi_mask  # 하단 2/3 부분만 예측 결과 반영
+    mask_full[one_third: , :] = sub_roi_mask
 
     return mask_full
+
 
 
 # ----------------------
