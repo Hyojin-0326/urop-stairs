@@ -4,11 +4,11 @@ import time
 import os
 
 ##### 데이터 로드,경로 또 꼬이면 meta 경로 utils에서 수정해야 함
-data_path = os.path.dirname(os.path.abspath(__file__))
-meta_path = os.path.join(data_path, "data", "meta.txt")
-rgb_path = os.path.join(data_path, "data", "rgb_data.bin")
-depth_path = os.path.join(data_path, "data", "depth_data.bin")
-engine_path = os.path.join(data_path, "data", "yolo_model.trt")
+current_path = os.path.dirname(os.path.abspath(__file__))
+meta_path = os.path.join(current_path, "data", "meta.txt")
+rgb_path = os.path.join(current_path, "data", "rgb_data.bin")
+depth_path = os.path.join(current_path, "data", "depth_data.bin")
+engine_path = os.path.join(current_path, "yolo", "yolo_model.trt")
 
 depth_map, rgb_image = utils.align_depth_to_rgb(depth_path, rgb_path, 10)
 

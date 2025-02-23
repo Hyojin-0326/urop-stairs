@@ -9,29 +9,88 @@ import tensorrt as trt
 import pycuda.driver as cuda
 import pycuda.autoinit
 
-#-------------YOlO->ONNX->tensorRT
-def convert_yolo_to_onnx(model_path, onnx_path="yolo_model.onnx", input_size=(1, 3, 640, 640)):
-    """ PyTorch YOLO 모델을 ONNX로 변환하는 함수 """
-    model = torch.load(model_path, map_location="cuda")  # 모델 로드
-    model.eval()  # 추론 모드로 설정
 
-    # 더미 입력 (YOLO는 640x640 기본)
-    dummy_input = torch.randn(*input_size).cuda()
 
-    # ONNX 변환
-    torch.onnx.export(
-        model, 
-        dummy_input, 
-        onnx_path, 
-        opset_version=11, 
-        input_names=["input"], 
-        output_names=["output"]
-    )
+#---------------전역변수모음
+class Config:
+    current_path = os.path.dirname(os.path.abspath(__file__))
+    onnx_path=os.path.join(current_path, "yolo", "yolo_model.onnx")
+    model_path = os.path.join(current_path, "yolo", "best.pt")
+    trt_path=os.path.join(current_path, "yolo", "yolo_model.trt")
 
-    print(f"✅ ONNX 변환 완료: {onnx_path}")
+
+
+#-------------YOlO->ONNX
+"""
+model path: 가중치, onnx_path: onnx 파일 저장할 경로
+output: onnx_path 뱉는 함수
+
+"""
+
+# def convert_yolo_to_onnx(model_path, onnx_path=Config.onnx_path, input_size=(1, 3, 640, 640)):
+#     """ PyTorch YOLO 모델을 ONNX로 변환하는 함수 """
+#     model = YOLO(model_path)  # 모델 로드
+#     model.eval()  # 추론 모드로 설정
+
+#     # 더미 입력 (YOLO는 640x640 기본)
+#     dummy_input = torch.randn(*input_size).cuda()
+
+#     # ONNX 변환
+#     torch.onnx.export(
+#         model.model,
+#         dummy_input, 
+#         onnx_path, 
+#         opset_version=11, 
+#         input_names=["input"], 
+#         output_names=["output"]
+#     )
+#     print(f"✅ ONNX 변환 완료: {onnx_path}")
+#     return onnx_path
+
+def convert_yolo_to_onnx(onnx_path=Config.onnx_path, input_size=(1, 3, 640, 640)):
+    """Ultralytics YOLOv8 → ONNX 변환"""
+    current_path = os.path.dirname(os.path.abspath(__file__))
+    model_path = os.path.join(current_path, "yolo", "best.pt")
+    print(f"🔹 [ONNX 변환 시작] 모델 로드 중: {model_path}")
+    
+    try:
+        model = YOLO(model_path)  # ✅ YOLOv8 모델 로드
+        print("✅ 모델 로드 완료")
+    except Exception as e:
+        print(f"❌ 모델 로드 실패: {e}")
+        return
+    
+    model.eval()  # 추론 모드 설정
+    dummy_input = torch.randn(*input_size).cuda()  # 더미 입력 (배치 1, 3채널, 640x640)
+
+    print("🔹 [ONNX 변환 진행 중] torch.onnx.export 실행")
+    
+    try:
+        torch.onnx.export(
+            model.model,  # ✅ `model.model`을 사용해야 PyTorch → ONNX 변환 가능
+            dummy_input, 
+            onnx_path, 
+            opset_version=11, 
+            input_names=["images"], 
+            output_names=["output"]
+        )
+        print(f"✅ ONNX 변환 완료: {onnx_path}")
+    except Exception as e:
+        print(f"❌ ONNX 변환 실패: {e}")
+        return
+    
     return onnx_path
 
-def convert_onnx_to_trt(onnx_path, trt_path="yolo_model.trt", fp16=True):
+
+
+
+#--------------ONNX -> TRT
+"""
+input: onnex_path(yolo->onnx 변환 함수의 아웃풋), trt_path(trt 저장할 경로)
+output: trt_path
+"""
+
+def convert_onnx_to_trt(onnx_path, trt_path=Config.trt_path, fp16=True):
     """ ONNX 모델을 TensorRT로 변환하는 함수 """
     fp16_flag = "--fp16" if fp16 else ""
     
@@ -42,9 +101,21 @@ def convert_onnx_to_trt(onnx_path, trt_path="yolo_model.trt", fp16=True):
     print(f"✅ TensorRT 변환 완료: {trt_path}")
     return trt_path
 
-def convert_yolo_to_trt(pytorch_model_path, onnx_path="yolo_model.onnx", trt_path="yolo_model.trt", fp16=True):
+
+#---------YOLO -> TRT
+
+"""
+input: model)path( .pt 가중치 패스)
+output: trt_path (모델)
+"""
+
+def convert_yolo_to_trt(onnx_path=Config.onnx_path, trt_path=Config.trt_path, fp16=True):
     """ PyTorch YOLO → ONNX → TensorRT 변환을 한 번에 처리하는 함수 """
-    convert_yolo_to_onnx(pytorch_model_path, onnx_path)
+
+    current_path = os.path.dirname(os.path.abspath(__file__))
+    model_path = os.path.join(current_path, "yolo", "best.pt")
+    print(f"🔹 [디버그] model_path: {model_path}")
+    convert_yolo_to_onnx(model_path, onnx_path)
     convert_onnx_to_trt(onnx_path, trt_path, fp16)
     print(f"🚀 최적화 완료! TensorRT 모델 저장됨: {trt_path}")
     return trt_path
@@ -58,9 +129,10 @@ def load_trt_engine(engine_path):
         runtime = trt.Runtime(TRT_LOGGER)
         return runtime.deserialize_cuda_engine(f.read())
 
-def load_model(engine_path="data/yolo_model.trt"):
+def load_model(model_path="/yolo/best.pt", trt_path="/yolo/yolo_model.trt"):
     """YOLO TensorRT 모델 불러오기"""
-    engine = load_trt_engine(engine_path)
+    trt_path = convert_yolo_to_trt(model_path)
+    engine = load_trt_engine(trt_path)
     context = engine.create_execution_context()
     return engine, context
 
@@ -123,6 +195,8 @@ def postprocess(output, img_shape, conf_thres=0.5, iou_thres=0.4):
     final_class_ids = [class_ids[i] for i in indices.flatten()]
 
     return final_bboxes, final_scores, final_class_ids
+
+
 class DetectionResult:
     """YOLO results 객체처럼 동작하는 클래스"""
     def __init__(self, bboxes, scores, class_ids):
