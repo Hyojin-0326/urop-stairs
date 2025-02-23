@@ -47,14 +47,16 @@ output: onnx_path 뱉는 함수
 #     print(f"✅ ONNX 변환 완료: {onnx_path}")
 #     return onnx_path
 
-def convert_yolo_to_onnx(onnx_path=Config.onnx_path, input_size=(1, 3, 640, 640)):
+def convert_yolo_to_onnx(model_path=Config.model_path, onnx_path=Config.onnx_path):
     """Ultralytics YOLOv8 → ONNX 변환"""
-    current_path = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(current_path, "yolo", "best.pt")
+
     print(f"🔹 [ONNX 변환 시작] 모델 로드 중: {model_path}")
+
+    input_size = (1, 3, 640, 640)
     
     try:
-        model = YOLO(model_path)  # ✅ YOLOv8 모델 로드
+        model = YOLO(model_path)
+        model.model.to("cuda")
         print("✅ 모델 로드 완료")
     except Exception as e:
         print(f"❌ 모델 로드 실패: {e}")
@@ -90,13 +92,17 @@ input: onnex_path(yolo->onnx 변환 함수의 아웃풋), trt_path(trt 저장할
 output: trt_path
 """
 
-def convert_onnx_to_trt(onnx_path, trt_path=Config.trt_path, fp16=True):
+def convert_onnx_to_trt(onnx_path = Config.onnx_path, trt_path=Config.trt_path, fp16=True):
     """ ONNX 모델을 TensorRT로 변환하는 함수 """
     fp16_flag = "--fp16" if fp16 else ""
     
     # TensorRTcond 변환 실행
     command = f"trtexec --onnx={onnx_path} --saveEngine={trt_path} {fp16_flag}"
-    os.system(command)
+    result = os.system(command)
+
+    if result != 0:
+        print("trt 변환 실패")
+        raise RuntimeError
     
     print(f"✅ TensorRT 변환 완료: {trt_path}")
     return trt_path
@@ -109,12 +115,13 @@ input: model)path( .pt 가중치 패스)
 output: trt_path (모델)
 """
 
-def convert_yolo_to_trt(onnx_path=Config.onnx_path, trt_path=Config.trt_path, fp16=True):
-    """ PyTorch YOLO → ONNX → TensorRT 변환을 한 번에 처리하는 함수 """
-
-    current_path = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(current_path, "yolo", "best.pt")
+def convert_yolo_to_trt(onnx_path=Config.onnx_path, trt_path=Config.trt_path, model_path = Config.model_path,fp16=True):
+    """ YOLO → ONNX → TensorRT """
+    print(f"🔹 [디버그] 전달된 model_path: {model_path}")
+    print(f"🔹 [디버그] 전달된 onnx_path: {onnx_path}")
+    print(f"🔹 [디버그] 전달된 trt_path: {trt_path}")
     print(f"🔹 [디버그] model_path: {model_path}")
+
     convert_yolo_to_onnx(model_path, onnx_path)
     convert_onnx_to_trt(onnx_path, trt_path, fp16)
     print(f"🚀 최적화 완료! TensorRT 모델 저장됨: {trt_path}")
