@@ -2,108 +2,60 @@ import torch
 import cv2
 import numpy as np
 import utils
+import main
+import open3d as o3d
+
+
 
 #----------- 파이프라인
-def measure_height(rgb_roi, depth_roi, bbox,model):
+def measure_height(depth_roi):
+    pcld_np = np.asarray(pcld.points)
+    pcld = utils.extract_plane_ransac(depth_roi)
+    if not pcld.has_normals():
+        pcld.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+
+    plane_normals = np.asarray(pcld.normals)
+    avg_normal = np.mean(plane_normals, axis=0)
+
+    angle = calculate_angle(avg_normal)
+    height=calculate_height(pcld_np)
+
+
+
+    # 첫 번째 점의 좌표 출력
+    print(f"첫 번째 3D 좌표: {pcld_np[0]}")
+    print(f"포인트 클라우드의 총 점 개수: {pcld_np.shape[0]}")
+    print(f'{angle} 라디안, {height} 미터')
+    return angle, height
+
+
+def calculate_angle(normal_vector):
+    # 수평면의 법선 벡터 (z 축 방향)
+    horizontal_normal = np.array([0, 0, 1])
     
-    segmented_img = segment_stairs_in_roi(rgb_roi,bbox, model)
-    detect_structure = postprocess_stair_mask(segmented_img)
-
-
-    ## 구조 보고 엣지부분만 3차원 좌표로 변환
-    pointcloud = utils.pixel_to_3d()
+    # 법선 벡터와 수평면 벡터 사이의 내적 계산
+    dot_product = np.dot(normal_vector, horizontal_normal)
     
-    ##픽셀 높이차이 재기
-    height = utils.diff_in_height()
+    # 각도 계산 (radian 단위)
+    angle_rad = np.arccos(dot_product / (np.linalg.norm(normal_vector) * np.linalg.norm(horizontal_normal)))
     
+    return angle_rad
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#-----------
-def segment_stairs_in_roi(color_img, bbox, model, device):
-    x1, y1, x2, y2 = bbox
-    roi_color = color_img[y1:y2, x1:x2]  # ROI 추출
-
-    # --- 1) ROI를 세로로 3등분 ---
-    roi_h, roi_w = roi_color.shape[:2]
-    one_third = roi_h // 3  # 3등분 높이
-    sub_roi_color = roi_color[one_third: , :]
-
-    # --- 2) 모델 입력 전처리 ---
-    sub_roi_rgb = cv2.cvtColor(sub_roi_color, cv2.COLOR_BGR2RGB)
-    sub_roi_tensor = torch.from_numpy(sub_roi_rgb).float().permute(2,0,1).unsqueeze(0).to(device)  # (1,3,h,w)
-    sub_roi_tensor /= 255.0
-
-    # --- 3) TensorRT 엔진을 통한 세그멘테이션 추론 ---
-    with torch.no_grad():
-        pred = model(sub_roi_tensor)  # (1, num_classes, h, w) 가정
-        pred_mask = torch.argmax(pred, dim=1).squeeze(0)  # (h, w)
+def calculate_height(pcld_np):
     
-    sub_roi_mask = pred_mask.cpu().numpy().astype(np.uint8)
-
-    # --- 4) 결과를 원본 ROI 크기로 복원 ---
-    mask_full = np.zeros((roi_h, roi_w), dtype=np.uint8)
-    mask_full[one_third: , :] = sub_roi_mask
-
-    return mask_full
-
-
-
-# ----------------------
-# 예시: 후속처리 (에지 검출 + 직선 검출) 함수
-# ----------------------
-
-def postprocess_stair_mask(mask_full):
-    """
-    세그멘테이션 마스크에서 계단 윤곽을 좀 더 깔끔하게 얻기 위한 후속 처리 예시
-    1) 모폴로지 연산
-    2) 에지 검출(Canny)
-    3) (선택) HoughLinesP로 계단 엣지 직선 검출
-    """
-
-    # 1) 모폴로지 연산으로 잡음 제거/채움
-    kernel = np.ones((3,3), np.uint8)
-    mask_clean = cv2.morphologyEx(mask_full, cv2.MORPH_OPEN, kernel, iterations=1)
-    mask_clean = cv2.morphologyEx(mask_clean, cv2.MORPH_CLOSE, kernel, iterations=1)
-
-    # 2) 에지 검출
-    # 세그멘테이션 마스크 자체가 0/1(or 0/255)이므로, 
-    # 윤곽선을 찾으려면 Canny를 적용하거나, cv2.findContours()도 가능
-    edges = cv2.Canny(mask_clean, 50, 150)
-
-    # 3) 직선 검출 (예시)
-    lines_p = cv2.HoughLinesP(
-        edges,
-        rho=1,
-        theta=np.pi/180,
-        threshold=30,
-        minLineLength=30,
-        maxLineGap=10
-    )
-
-    # 필요 시 lines_p를 후속 처리(병합/필터링) 후, 각도 계산 등에 활용
-    return edges, lines_p
+    pcld_sorted = pcld_np[np.argsort(pcld_np[:, 2])]  # z 값 기준으로 오름차순 정렬
+    
+    # 윗쪽 엣지 (상위 10%의 포인트들)
+    upper_edge = pcld_sorted[int(0.9 * len(pcld_sorted)):]  # 90% 이상은 윗쪽 엣지
+    
+    # 아랫쪽 엣지 (하위 10%의 포인트들)
+    lower_edge = pcld_sorted[:int(0.1 * len(pcld_sorted))]  # 10% 이하를 아랫쪽 엣지
+    
+    # 윗쪽 엣지와 아랫쪽 엣지의 평균 z 값을 계산
+    upper_edge_mean = np.mean(upper_edge[:, 2])
+    lower_edge_mean = np.mean(lower_edge[:, 2])
+    
+    # 높이는 윗쪽 엣지의 평균 높이에서 아랫쪽 엣지의 평균 높이를 빼서 계산
+    height = upper_edge_mean - lower_edge_mean
+    
+    return height

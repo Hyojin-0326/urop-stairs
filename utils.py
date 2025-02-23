@@ -4,18 +4,41 @@ import pyrealsense2 as rs
 import torch
 import stairs
 import os
+import open3d as o3d
 
 
-def pixel_to_3d(u, v, depth_val, fx, fy, cx, cy):
-    X = (u - cx) * depth_val / fx
-    Y = (v - cy) * depth_val / fy
-    Z = depth_val
-    return X, Y, Z
 
-#######❗❗❗❗❗ 수정필요, 위아래 픽셀로 높이재는거
 
-def diff_in_height():
-    return 0
+class Config:
+    fx, fy, cx, cy = 605.9815, 606.1337, 308.5001, 246.4238
+    intrinsic_matrix = intrinsic_matrix = np.array([
+    [fx,  0, cx],  # 초점 거리 fx, 주점(cx)
+    [ 0, fy, cy],  # 초점 거리 fy, 주점(cy)
+    [ 0,  0,  1]   # 변환을 위한 마지막 행 (고정)
+])
+    depth_scale = 0.001
+
+
+
+def depth_to_pointcloud(depth_map, intrinsic_matrix=Config.intrinsic_matrix, depth_scale=Config.depth_scale):
+    """
+    Open3D를 사용하여 Depth 이미지를 포인트클라우드로 변환.
+    :param depth_map: (H, W) 형태의 NumPy 배열 (Depth 이미지)
+    :param intrinsic_matrix: 3x3 형태의 카메라 내적 행렬 (fx, fy, cx, cy 포함)
+    :param depth_scale: Depth 값의 스케일링 (RealSense는 1000.0을 사용)
+    :return: Open3D PointCloud 객체
+    """
+    # ✅ CUDA 연산 없이 바로 Open3D Tensor로 변환 (PyTorch X)
+    depth_o3d = o3d.core.Tensor(depth_map.astype(np.float32) / depth_scale, dtype=o3d.core.Dtype.Float32)
+
+    # ✅ Open3D의 Tensor 기반 Intrinsic 설정 (GPU 최적화됨)
+    intrinsic_o3d = o3d.core.Tensor(intrinsic_matrix, dtype=o3d.core.Dtype.Float64)
+
+    # ✅ Open3D GPU 기반 변환 (to_legacy() 사용 안 함)
+    pcd = o3d.t.geometry.PointCloud.create_from_depth_image(depth_o3d, intrinsic_o3d)
+
+    return pcd  # ✅ Open3D GPU 포인트클라우드 유지
+
 
 #----------------- 데이터 로드 함수
 def load_rgb_from_bin(bin_path, frame_idx, height=480, width=640):
@@ -189,6 +212,46 @@ def get_closest_box_with_depth(boxes, depth_map):
 
     return (closest_cls_id, closest_box) 
 
+def extract_plane_ransac(depth_map, intrinsic_matrix=Config.intrinsic_matrix, threshold=0.01):
+    """
+    Depth 이미지에서 여러 평면을 추출하고, 각 평면의 최소 Depth 값을 계산하여
+    가장 가까운 평면을 선택합니다.
+    :param depth_map: (H, W) 형태의 Depth 이미지
+    :param intrinsic_matrix: 카메라 내적 행렬 (fx, fy, cx, cy 포함)
+    :param threshold: RANSAC에서 평면과의 거리 기준
+    :return: 가장 가까운 평면에 해당하는 포인트들 (inliers)
+    """
+    # Depth 이미지를 포인트클라우드로 변환
+    pcd = depth_to_pointcloud(depth_map, intrinsic_matrix)
+    
+    # RANSAC을 이용해 여러 평면 모델 추출
+    planes = []
+    for _ in range(10):  # 평면을 여러 개 추출 (예: 10번 반복)
+        plane_model, inliers = pcd.segment_plane(distance_threshold=threshold, ransac_n=3, num_iterations=1000)
+        inlier_cloud = pcd.select_by_index(inliers)
+        planes.append((plane_model, inlier_cloud))
+        
+        # 추출된 평면을 포인트클라우드에서 제외시켜 다음 평면을 찾기 위해
+        pcd = pcd.select_by_index(inliers, invert=True)  
+    
+    # 각 평면의 Depth 계산 (평면에 포함된 점들의 최소 Depth 값)
+    min_depth = float('inf')
+    closest_plane = None
+    
+    for plane_model, inlier_cloud in planes:
+        # 평면에 포함된 점들의 깊이 값 계산
+        inlier_points = np.asarray(inlier_cloud.points)
+        min_plane_depth = np.min(inlier_points[:, 2])  # Z 값이 Depth에 해당
+        
+        # 가장 작은 Depth 값을 가진 평면을 선택
+        if min_plane_depth < min_depth:
+            min_depth = min_plane_depth
+            closest_plane = inlier_cloud
+    
+    return closest_plane
+
+
+
 
 
 
@@ -201,11 +264,12 @@ def crop_roi(bbox, rgb_image, depth_map):
 
 
 #--------- 클래스 분류해서 함수 실행 ❗❗❗❗❗❗❗❗❗❗수정필요
-def measure_height(cls_id,rgb_roi, depth_roi, bbox,model):
+def measure_height(cls_id,rgb_roi, depth_roi, model):
     if cls_id ==0:
-        stairs.measure_height(rgb_roi, depth_roi, bbox, model)
+        angle, height = stairs.measure_height(depth_roi)
     #❗디버깅용
     print("높이 측정중")
+    return angle, height
 
 
 

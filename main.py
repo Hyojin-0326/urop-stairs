@@ -30,7 +30,10 @@ else:
 rgb_roi, depth_roi = utils.crop_roi(bbox, rgb_image, depth_map)
 
 ###### ROI 내에서 탐지된 물체의 height 구하기 (5프레임동안 모아서 평균)
-#height = utils.measure_height(cls_id, rgb_roi, depth_roi, bbox, model)
+height = utils.measure_height(cls_id, rgb_roi, depth_roi, bbox)
+
+
+
 
 end_time = time.time()
 exe_time = end_time - start_time
