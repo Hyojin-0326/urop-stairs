@@ -9,6 +9,20 @@ import tensorrt as trt
 import pycuda.driver as cuda
 import pycuda.autoinit
 
+#-----------------ultralytics 욜로 객체처럼 변환하는거
+class Boxes:
+    """ 바운딩 박스 데이터를 YOLO 형식과 유사하게 감싸는 클래스 """
+    def __init__(self, bboxes, scores, cls):
+        self.xyxy = np.array(bboxes)  # 좌표 정보
+        self.scores = np.array(scores)  # 신뢰도 점수
+        self.cls = np.array(cls)  # 클래스 ID
+
+class DetectionResult:
+    """ YOLO 형식과 호환되도록 boxes 속성을 포함한 결과 객체 """
+    def __init__(self, bboxes, scores, cls):
+        self.boxes = Boxes(bboxes, scores, cls)  # Boxes 객체로 감싸기
+
+
 
 
 #---------------전역변수모음
@@ -99,72 +113,123 @@ def letterbox(image, new_shape=(640, 640), color=(114, 114, 114)):
     return image_padded
 
 
-def postprocess(output, img_shape, conf_thres=0.5, iou_thres=0.4):
+def postprocess(output, img_shape, conf_thres=0.1, iou_thres=0.4):
     """ YOLO TensorRT 후처리: 바운딩 박스 & NMS 적용 """
     print("Output shape before processing:", output.shape)
 
     #output에서 첫 번째 차원을 제거
-    #두 번째 차원(60)의 클래스 확률에 접근(어차피 binary 탐색이라 클래스는 1개밖에 없음)
+    if output.shape[0] == 1:
+        output = np.squeeze(output, axis=0)
+    print("After squeeze:", output.shape)
 
-    num_detections = output.shape[0]  # 감지된 객체 개수
+    # detection vector가 첫 번째 차원에 있으므로, (65, 80, 80)에서 (80, 80, 65)로 변환
+    output = output.transpose(1, 2, 0)
+    print("After transpose:", output.shape)
+
+    # 공간 차원(80,80)을 flatten해서 (80*80, 65) 형태로 변경
+    output = output.reshape(-1, output.shape[-1])
+    print("After reshape:", output.shape)
+    
+    num_detections = output.shape[0]  # 총 감지된 셀 수
     bboxes = []
     scores = []
-    class_ids = []
+    class_ids=[]
 
     for i in range(num_detections):
-        confidence = float(output[i, 4])  # 객체 신뢰도
+        detection = output[i]
+        # detection[0:4]: 정규화된 좌표 (x_center, y_center, width, height)
+        # detection[4]: objectness score (confidence)
+        # detection[5:]: 클래스 확률 (여기선 binary 검출이라 클래스가 1개임)
+        confidence = float(detection[4])
         if confidence < conf_thres:
-            continue  # 신뢰도 낮으면 무시
+            continue
 
-        # 클래스 확률 중 가장 높은 것 찾기
-        class_probs = output[i, 5:]  # 클래스 확률 (80개)
+        class_probs = detection[5:]
         class_id = np.argmax(class_probs)
-        score = class_probs[class_id] * confidence  # 최종 신뢰도
-
+        score = float(class_probs[class_id]) * confidence
         if score < conf_thres:
             continue
 
-        # YOLO는 정규화된 좌표를 반환하므로 원본 이미지 크기로 변환
-        x_center, y_center, w, h = output[i, :4] * np.array([img_shape[1], img_shape[0], img_shape[1], img_shape[0]])
+        # 좌표를 원본 이미지 크기로 변환
+        x_center, y_center, w, h = detection[0:4] * np.array([img_shape[1], img_shape[0], img_shape[1], img_shape[0]])
         x1 = int(x_center - w / 2)
         y1 = int(y_center - h / 2)
         x2 = int(x_center + w / 2)
         y2 = int(y_center + h / 2)
-
+        
         bboxes.append([x1, y1, x2, y2])
-        scores.append(float(score))
+        scores.append(score)
         class_ids.append(class_id)
-
-    # NMS 적용
+    
+    # NMS 적용 (indices가 비어있을 수 있으므로 체크)
     indices = cv2.dnn.NMSBoxes(bboxes, scores, conf_thres, iou_thres)
-    final_bboxes = [bboxes[i] for i in indices.flatten()]
-    final_scores = [scores[i] for i in indices.flatten()]
-    final_class_ids = [class_ids[i] for i in indices.flatten()]
-
+    if len(indices) > 0:
+        final_bboxes = [bboxes[i] for i in indices.flatten()]
+        final_scores = [scores[i] for i in indices.flatten()]
+        final_class_ids = [class_ids[i] for i in indices.flatten()]
+    else:
+        final_bboxes, final_scores, final_class_ids = [], [], []
+    
     return final_bboxes, final_scores, final_class_ids
 
 
-class DetectionResult:
-    """YOLO results 객체처럼 동작하는 클래스"""
-    def __init__(self, bboxes, scores, class_ids):
-        self.boxes = np.array(bboxes, dtype=np.float32)  # 바운딩 박스 (xyxy)
-        self.scores = np.array(scores, dtype=np.float32)  # 신뢰도 점수
-        self.class_ids = np.array(class_ids, dtype=np.int32)  # 클래스 ID
+# def detect(engine, context, image):
+#     """ TensorRT 기반 YOLO 추론 (기존 YOLO results 객체처럼 출력) """
 
-    def __getitem__(self, idx):
-        """ 리스트처럼 인덱싱 가능하도록 설정 """
-        return (self.boxes[idx], self.scores[idx], self.class_ids[idx])
+#     if isinstance(image, str):  # 이미지 파일 경로 입력
+#         image = cv2.imread(image)
 
-    def __len__(self):
-        return len(self.boxes)
+#     img_shape = image.shape[:2]  # (H, W) 저장
+#     image_padded = letterbox(image)  # YOLO 입력 크기 맞춤
+#     image_padded = image_padded.astype(np.float32) / 255.0  # 정규화
+
+#     print("Final shape before CUDA:", image_padded.shape)  # ✅ (1, 3, 640, 640) 확인
+
+#     # TensorRT 실행
+#     d_input = cuda.mem_alloc(image_padded.nbytes)
+
+#     # ✅ 엔진에서 출력 텐서 크기 가져오기
+#     output_shape = context.get_binding_shape(1)  # 1번 인덱스가 출력 텐서
+#     output_size = np.prod(output_shape) * np.dtype(np.float32).itemsize  # 총 바이트 수 계산
+#     d_output = cuda.mem_alloc(int(output_size))  # ✅ 정확한 크기 설정
+
+#     bindings = [int(d_input), int(d_output)]
+#     stream = cuda.Stream()
+
+#     # 입력 데이터 복사
+#     cuda.memcpy_htod_async(d_input, image_padded, stream)
+#     context.execute_async_v2(bindings=bindings, stream_handle=stream.handle)
+
+#     # ✅ 출력 데이터를 위한 새로운 배열 생성
+#     h_output = np.empty(output_shape, dtype=np.float32)  # 모델 출력 크기와 동일한 형태
+
+#     # ✅ GPU → CPU로 출력 데이터 복사
+#     cuda.memcpy_dtoh_async(h_output, d_output, stream)
+#     stream.synchronize()
+
+#     # ✅ 후처리 함수에서 h_output을 사용하도록 수정
+#     final_bboxes, final_scores, final_class_ids = postprocess(h_output, img_shape)
+
+#     # 기존 YOLO `results` 객체처럼 변환
+#     results = [DetectionResult(final_bboxes, final_scores, final_class_ids)]
+# # 디버깅 코드 추가
+#     print("Detections:")
+#     for i in range(len(results[0].boxes.xyxy)):
+#         print(f"Box {i}: {results[0].boxes.xyxy[i]}, Score: {results[0].boxes.scores[i]}, Class: {results[0].boxes.cls[i]}")
+
+#     return results  # 기존 코드와 호환되도록 리스트 형태 반환
 
 def detect(engine, context, image):
     """ TensorRT 기반 YOLO 추론 (기존 YOLO results 객체처럼 출력) """
+
+    print("DEBUG: detect() 시작")
 
     if isinstance(image, str):  # 이미지 파일 경로 입력
         image = cv2.imread(image)
 
     img_shape = image.shape[:2]  # (H, W) 저장
+    print("DEBUG: Image shape:", img_shape)
+
     image_padded = letterbox(image)  # YOLO 입력 크기 맞춤
     image_padded = image_padded.astype(np.float32) / 255.0  # 정규화
 
@@ -172,32 +237,56 @@ def detect(engine, context, image):
 
     # TensorRT 실행
     d_input = cuda.mem_alloc(image_padded.nbytes)
+    print("DEBUG: d_input 메모리 할당 완료")
 
     # ✅ 엔진에서 출력 텐서 크기 가져오기
     output_shape = context.get_binding_shape(1)  # 1번 인덱스가 출력 텐서
     output_size = np.prod(output_shape) * np.dtype(np.float32).itemsize  # 총 바이트 수 계산
+    print("DEBUG: Output shape:", output_shape)
+
     d_output = cuda.mem_alloc(int(output_size))  # ✅ 정확한 크기 설정
+    print("DEBUG: d_output 메모리 할당 완료")
 
     bindings = [int(d_input), int(d_output)]
     stream = cuda.Stream()
+    print("DEBUG: CUDA Stream 생성 완료")
 
     # 입력 데이터 복사
     cuda.memcpy_htod_async(d_input, image_padded, stream)
-    context.execute_async_v2(bindings=bindings, stream_handle=stream.handle)
+    print("DEBUG: 입력 데이터 복사 완료")
+
+    # TensorRT 실행
+    try:
+        context.execute_async_v2(bindings=bindings, stream_handle=stream.handle)
+        print("DEBUG: TensorRT 실행 완료")
+    except Exception as e:
+        print("ERROR: TensorRT 실행 중 오류 발생", str(e))
+        return []
 
     # ✅ 출력 데이터를 위한 새로운 배열 생성
     h_output = np.empty(output_shape, dtype=np.float32)  # 모델 출력 크기와 동일한 형태
+    print("DEBUG: h_output 배열 생성 완료")
 
     # ✅ GPU → CPU로 출력 데이터 복사
     cuda.memcpy_dtoh_async(h_output, d_output, stream)
     stream.synchronize()
+    print("DEBUG: GPU → CPU 데이터 복사 완료")
 
     # ✅ 후처리 함수에서 h_output을 사용하도록 수정
     final_bboxes, final_scores, final_class_ids = postprocess(h_output, img_shape)
+    if not final_bboxes:
+        print("DEBUG: postprocess has done, No detections found")
+        return []
 
     # 기존 YOLO `results` 객체처럼 변환
     results = [DetectionResult(final_bboxes, final_scores, final_class_ids)]
+    
+    # ✅ 디버깅 코드 추가
+    print("Detections:")
+    for i in range(len(results[0].boxes.xyxy)):
+        print(f"Box {i}: {results[0].boxes.xyxy[i]}, Score: {results[0].boxes.scores[i]}, Class: {results[0].boxes.cls[i]}")
 
+    print("DEBUG: detect() 완료")
     return results  # 기존 코드와 호환되도록 리스트 형태 반환
 
 
