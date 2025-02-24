@@ -8,6 +8,8 @@ import os
 import tensorrt as trt
 import pycuda.driver as cuda
 import pycuda.autoinit
+import scipy.special  
+from scipy.special import expit
 
 #-----------------ultralytics 욜로 객체처럼 변환하는거
 class Boxes:
@@ -51,32 +53,6 @@ def load_model(model_path=Config.model_path, trt_path=Config.trt_path):
 
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
 
-# def letterbox(image, new_shape=(640, 640), color=(114, 114, 114)):
-#     """ 이미지 비율을 유지하면서 YOLO 입력 크기(640x640)로 패딩 """
-#     shape = image.shape[:2]  # 현재 (H, W)
-#     ratio = min(new_shape[0] / shape[0], new_shape[1] / shape[1])  # 크기 비율 유지
-#     new_unpad = (int(round(shape[1] * ratio)), int(round(shape[0] * ratio)))  # 새로운 크기
-#     image_resized = cv2.resize(image, new_unpad, interpolation=cv2.INTER_LINEAR)
-
-#     # 패딩 추가 (좌우/상하)
-#     dw = (new_shape[1] - new_unpad[0]) / 2  # width padding
-#     dh = (new_shape[0] - new_unpad[1]) / 2  # height padding
-#     top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-#     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-
-#     # 패딩 적용
-#     image_padded = cv2.copyMakeBorder(image_resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
-#     image_padded = image_padded.astype(np.float32)
-#     image_padded = np.ascontiguousarray(image_padded)
-
-
-#     print("C_CONTIGUOUS:", image_padded.flags['C_CONTIGUOUS'])
-#     print("Shape:", image_padded.shape)
-#     print("Dtype:", image_padded.dtype)
-
-
-#     return image_padded
-
 
 def letterbox(image, new_shape=(640, 640), color=(114, 114, 114)):
     """ 이미지 비율을 유지하면서 YOLO 입력 크기(640x640)로 패딩 """
@@ -113,55 +89,61 @@ def letterbox(image, new_shape=(640, 640), color=(114, 114, 114)):
     return image_padded
 
 
-def postprocess(output, img_shape, conf_thres=0.1, iou_thres=0.4):
+def postprocess(output, img_shape, conf_thres=0.2, iou_thres=0.4):
     """ YOLO TensorRT 후처리: 바운딩 박스 & NMS 적용 """
     print("Output shape before processing:", output.shape)
-
-    #output에서 첫 번째 차원을 제거
+    
+    # 1. 배치 차원 제거 (예: (1, 65, 80, 80) -> (65, 80, 80))
     if output.shape[0] == 1:
         output = np.squeeze(output, axis=0)
     print("After squeeze:", output.shape)
-
-    # detection vector가 첫 번째 차원에 있으므로, (65, 80, 80)에서 (80, 80, 65)로 변환
+    
+    # 2. (65, 80, 80) → (80, 80, 65) 변환
     output = output.transpose(1, 2, 0)
     print("After transpose:", output.shape)
-
-    # 공간 차원(80,80)을 flatten해서 (80*80, 65) 형태로 변경
+    
+    # 3. (80, 80, 65) → (6400, 65)로 변환
     output = output.reshape(-1, output.shape[-1])
     print("After reshape:", output.shape)
-    
-    num_detections = output.shape[0]  # 총 감지된 셀 수
+
+    num_detections = output.shape[0]  # 총 detection 수
     bboxes = []
     scores = []
-    class_ids=[]
-
+    class_ids = []
+    
     for i in range(num_detections):
         detection = output[i]
-        # detection[0:4]: 정규화된 좌표 (x_center, y_center, width, height)
-        # detection[4]: objectness score (confidence)
-        # detection[5:]: 클래스 확률 (여기선 binary 검출이라 클래스가 1개임)
-        confidence = float(detection[4])
+
+        confidence = float(scipy.special.expit(detection[4]))  # objectness score
         if confidence < conf_thres:
             continue
 
-        class_probs = detection[5:]
-        class_id = np.argmax(class_probs)
+        class_probs = scipy.special.expit(detection[5:]) 
+        class_id = int(np.argmax(class_probs))
         score = float(class_probs[class_id]) * confidence
         if score < conf_thres:
             continue
 
-        # 좌표를 원본 이미지 크기로 변환
         x_center, y_center, w, h = detection[0:4] * np.array([img_shape[1], img_shape[0], img_shape[1], img_shape[0]])
-        x1 = int(x_center - w / 2)
-        y1 = int(y_center - h / 2)
-        x2 = int(x_center + w / 2)
-        y2 = int(y_center + h / 2)
-        
+
+        print("Detection values:", detection[0:4])  # 출력 값 확인
+
+
+        x1 = int(x_center - w / 2)  # x1 = center - width/2
+        y1 = int(y_center - h / 2)  # y1 = center - height/2
+        x2 = int(x_center + w / 2)  # x2 = center + width/2
+        y2 = int(y_center + h / 2)  # y2 = center + height/2
+  
+        if x1 < 0: x1 = 0
+        if y1 < 0: y1 = 0
+        if x2 > img_shape[1]: x2 = img_shape[1]
+        if y2 > img_shape[0]: y2 = img_shape[0]
+
         bboxes.append([x1, y1, x2, y2])
         scores.append(score)
         class_ids.append(class_id)
     
-    # NMS 적용 (indices가 비어있을 수 있으므로 체크)
+    # 5. NMS 적용
     indices = cv2.dnn.NMSBoxes(bboxes, scores, conf_thres, iou_thres)
     if len(indices) > 0:
         final_bboxes = [bboxes[i] for i in indices.flatten()]
@@ -169,55 +151,9 @@ def postprocess(output, img_shape, conf_thres=0.1, iou_thres=0.4):
         final_class_ids = [class_ids[i] for i in indices.flatten()]
     else:
         final_bboxes, final_scores, final_class_ids = [], [], []
-    
+
     return final_bboxes, final_scores, final_class_ids
 
-
-# def detect(engine, context, image):
-#     """ TensorRT 기반 YOLO 추론 (기존 YOLO results 객체처럼 출력) """
-
-#     if isinstance(image, str):  # 이미지 파일 경로 입력
-#         image = cv2.imread(image)
-
-#     img_shape = image.shape[:2]  # (H, W) 저장
-#     image_padded = letterbox(image)  # YOLO 입력 크기 맞춤
-#     image_padded = image_padded.astype(np.float32) / 255.0  # 정규화
-
-#     print("Final shape before CUDA:", image_padded.shape)  # ✅ (1, 3, 640, 640) 확인
-
-#     # TensorRT 실행
-#     d_input = cuda.mem_alloc(image_padded.nbytes)
-
-#     # ✅ 엔진에서 출력 텐서 크기 가져오기
-#     output_shape = context.get_binding_shape(1)  # 1번 인덱스가 출력 텐서
-#     output_size = np.prod(output_shape) * np.dtype(np.float32).itemsize  # 총 바이트 수 계산
-#     d_output = cuda.mem_alloc(int(output_size))  # ✅ 정확한 크기 설정
-
-#     bindings = [int(d_input), int(d_output)]
-#     stream = cuda.Stream()
-
-#     # 입력 데이터 복사
-#     cuda.memcpy_htod_async(d_input, image_padded, stream)
-#     context.execute_async_v2(bindings=bindings, stream_handle=stream.handle)
-
-#     # ✅ 출력 데이터를 위한 새로운 배열 생성
-#     h_output = np.empty(output_shape, dtype=np.float32)  # 모델 출력 크기와 동일한 형태
-
-#     # ✅ GPU → CPU로 출력 데이터 복사
-#     cuda.memcpy_dtoh_async(h_output, d_output, stream)
-#     stream.synchronize()
-
-#     # ✅ 후처리 함수에서 h_output을 사용하도록 수정
-#     final_bboxes, final_scores, final_class_ids = postprocess(h_output, img_shape)
-
-#     # 기존 YOLO `results` 객체처럼 변환
-#     results = [DetectionResult(final_bboxes, final_scores, final_class_ids)]
-# # 디버깅 코드 추가
-#     print("Detections:")
-#     for i in range(len(results[0].boxes.xyxy)):
-#         print(f"Box {i}: {results[0].boxes.xyxy[i]}, Score: {results[0].boxes.scores[i]}, Class: {results[0].boxes.cls[i]}")
-
-#     return results  # 기존 코드와 호환되도록 리스트 형태 반환
 
 def detect(engine, context, image):
     """ TensorRT 기반 YOLO 추론 (기존 YOLO results 객체처럼 출력) """
