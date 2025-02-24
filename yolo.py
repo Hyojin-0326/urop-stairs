@@ -20,134 +20,6 @@ class Config:
 
 
 
-#-------------YOlO->ONNX
-"""
-model path: 가중치, onnx_path: onnx 파일 저장할 경로
-output: onnx_path 뱉는 함수
-
-"""
-# def convert_yolo_to_onnx(model_path=Config.model_path, onnx_path=Config.onnx_path):
-#     """Ultralytics YOLOv8 → ONNX 변환"""
-
-#     print(f"🔹 [ONNX 변환 시작] 모델 로드 중: {model_path}")
-
-#     input_size = (1, 3, 640, 640)
-    
-#     try:
-#         model = YOLO(model_path)
-#         model.model.to("cuda")
-#         print("✅ 모델 로드 완료")
-#     except Exception as e:
-#         print(f"❌ 모델 로드 실패: {e}")
-#         return
-    
-#     model.eval()  # 추론 모드 설정
-#     dummy_input = torch.randn(*input_size).cuda()  # 더미 입력 (배치 1, 3채널, 640x640)
-
-#     print("🔹 [ONNX 변환 진행 중] torch.onnx.export 실행")
-    
-#     try:
-#         torch.onnx.export(
-#             model.model,  # ✅ `model.model`을 사용해야 PyTorch → ONNX 변환 가능
-#             dummy_input, 
-#             onnx_path, 
-#             opset_version=11, 
-#             input_names=["images"], 
-#             output_names=["output"]
-#         )
-#         print(f"✅ ONNX 변환 완료: {onnx_path}")
-#     except Exception as e:
-#         print(f"❌ ONNX 변환 실패: {e}")
-#         return
-    
-#     return onnx_path
-
-
-def convert_yolo_to_onnx(model_path=Config.model_path, onnx_path=None):
-    """Ultralytics YOLOv8 → ONNX 변환"""
-
-
-    if onnx_path is None:
-        onnx_path = os.path.join(Config.current_path, "data", "yolo_model.onnx")
-    print(f"🔹 [ONNX 변환 시작] 모델 로드 중: {model_path}")
-
-    input_size = (1, 3, 640, 640)
-    
-    try:
-        model = YOLO(model_path)
-        model.model.to("cuda")
-        print("✅ 모델 로드 완료")
-    except Exception as e:
-        print(f"❌ 모델 로드 실패: {e}")
-        return
-    
-    model.eval()  # 추론 모드 설정
-    dummy_input = torch.randn(*input_size).cuda()  # 더미 입력 (배치 1, 3채널, 640x640)
-
-    print("🔹 [ONNX 변환 진행 중] torch.onnx.export 실행")
-    
-    try:
-        torch.onnx.export(
-            model.model,  # ✅ `model.model`을 사용해야 PyTorch → ONNX 변환 가능
-            dummy_input, 
-            onnx_path, 
-            opset_version=11, 
-            input_names=["images"], 
-            output_names=["output"]
-        )
-        print(f"✅ ONNX 변환 완료: {onnx_path}")
-    except Exception as e:
-        print(f"❌ ONNX 변환 실패: {e}")
-        return
-    
-    return onnx_path
-
-
-
-
-#--------------ONNX -> TRT
-"""
-input: onnex_path(yolo->onnx 변환 함수의 아웃풋), trt_path(trt 저장할 경로)
-output: trt_path
-"""
-
-def convert_onnx_to_trt(onnx_path = Config.onnx_path, trt_path=Config.trt_path, fp16=True):
-    """ ONNX 모델을 TensorRT로 변환하는 함수 """
-    fp16_flag = "--fp16" if fp16 else ""
-    
-    # TensorRTcond 변환 실행
-    command = f"trtexec --onnx={onnx_path} --saveEngine={trt_path} {fp16_flag}"
-    result = os.system(command)
-
-    if result != 0:
-        print("trt 변환 실패")
-        raise RuntimeError
-    
-    print(f"✅ TensorRT 변환 완료: {trt_path}")
-    return trt_path
-
-
-#---------YOLO -> TRT
-
-"""
-input: model)path( .pt 가중치 패스)
-output: trt_path (모델)
-"""
-
-def convert_yolo_to_trt(onnx_path=Config.onnx_path, trt_path=Config.trt_path, model_path = Config.model_path,fp16=True):
-    """ YOLO → ONNX → TensorRT """
-    print(f"🔹 [디버그] 전달된 model_path: {model_path}")
-    print(f"🔹 [디버그] 전달된 onnx_path: {onnx_path}")
-    print(f"🔹 [디버그] 전달된 trt_path: {trt_path}")
-    print(f"🔹 [디버그] model_path: {model_path}")
-
-    convert_yolo_to_onnx(model_path, onnx_path)
-    convert_onnx_to_trt(onnx_path, trt_path, fp16)
-    print(f"🚀 최적화 완료! TensorRT 모델 저장됨: {trt_path}")
-    return trt_path
-
-
-
 #---------------YOLO----------------
 def load_trt_engine(engine_path):
     """TensorRT 엔진 로드"""
@@ -155,15 +27,42 @@ def load_trt_engine(engine_path):
         runtime = trt.Runtime(TRT_LOGGER)
         return runtime.deserialize_cuda_engine(f.read())
 
-def load_model(model_path="/yolo/best.pt", trt_path="/yolo/yolo_model.trt"):
+def load_model(model_path=Config.model_path, trt_path=Config.trt_path):
     """YOLO TensorRT 모델 불러오기"""
-    trt_path = convert_yolo_to_trt(model_path)
+    trt_path = Config.trt_path
     engine = load_trt_engine(trt_path)
     context = engine.create_execution_context()
     return engine, context
 
 
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+
+# def letterbox(image, new_shape=(640, 640), color=(114, 114, 114)):
+#     """ 이미지 비율을 유지하면서 YOLO 입력 크기(640x640)로 패딩 """
+#     shape = image.shape[:2]  # 현재 (H, W)
+#     ratio = min(new_shape[0] / shape[0], new_shape[1] / shape[1])  # 크기 비율 유지
+#     new_unpad = (int(round(shape[1] * ratio)), int(round(shape[0] * ratio)))  # 새로운 크기
+#     image_resized = cv2.resize(image, new_unpad, interpolation=cv2.INTER_LINEAR)
+
+#     # 패딩 추가 (좌우/상하)
+#     dw = (new_shape[1] - new_unpad[0]) / 2  # width padding
+#     dh = (new_shape[0] - new_unpad[1]) / 2  # height padding
+#     top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+#     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+
+#     # 패딩 적용
+#     image_padded = cv2.copyMakeBorder(image_resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
+#     image_padded = image_padded.astype(np.float32)
+#     image_padded = np.ascontiguousarray(image_padded)
+
+
+#     print("C_CONTIGUOUS:", image_padded.flags['C_CONTIGUOUS'])
+#     print("Shape:", image_padded.shape)
+#     print("Dtype:", image_padded.dtype)
+
+
+#     return image_padded
+
 
 def letterbox(image, new_shape=(640, 640), color=(114, 114, 114)):
     """ 이미지 비율을 유지하면서 YOLO 입력 크기(640x640)로 패딩 """
@@ -180,10 +79,32 @@ def letterbox(image, new_shape=(640, 640), color=(114, 114, 114)):
 
     # 패딩 적용
     image_padded = cv2.copyMakeBorder(image_resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
+    image_padded = image_padded.astype(np.float32)
+
+     # (H, W, C) → (C, XH, W) 변환 필요할 경우 수행
+    if image_padded.shape[-1] == 3:  # 마지막 차원이 3이면 변환 필요
+        image_padded = np.transpose(image_padded, (2, 0, 1))  # (H, W, C) → (C, H, W)
+
+
+    # 배치 차원 추가 (YOLO 모델이 (1, C, H, W) 형식을 기대할 수도 있음)
+    image_padded = np.expand_dims(image_padded, axis=0)  # (C, H, W) → (1, C, H, W)
+
+    # 메모리 연속성을 보장
+    image_padded = np.ascontiguousarray(image_padded)
+
+    print("C_CONTIGUOUS:", image_padded.flags['C_CONTIGUOUS'])
+    print("Shape:", image_padded.shape)  # (1, 3, 640, 640) 형태가 되어야 함
+    print("Dtype:", image_padded.dtype)
+
     return image_padded
+
 
 def postprocess(output, img_shape, conf_thres=0.5, iou_thres=0.4):
     """ YOLO TensorRT 후처리: 바운딩 박스 & NMS 적용 """
+    print("Output shape before processing:", output.shape)
+
+    #output에서 첫 번째 차원을 제거
+    #두 번째 차원(60)의 클래스 확률에 접근(어차피 binary 탐색이라 클래스는 1개밖에 없음)
 
     num_detections = output.shape[0]  # 감지된 객체 개수
     bboxes = []
@@ -191,7 +112,7 @@ def postprocess(output, img_shape, conf_thres=0.5, iou_thres=0.4):
     class_ids = []
 
     for i in range(num_detections):
-        confidence = output[i, 4]  # 객체 신뢰도
+        confidence = float(output[i, 4])  # 객체 신뢰도
         if confidence < conf_thres:
             continue  # 신뢰도 낮으면 무시
 
@@ -246,21 +167,33 @@ def detect(engine, context, image):
     img_shape = image.shape[:2]  # (H, W) 저장
     image_padded = letterbox(image)  # YOLO 입력 크기 맞춤
     image_padded = image_padded.astype(np.float32) / 255.0  # 정규화
-    image_padded = np.transpose(image_padded, (2, 0, 1))  # (H, W, C) → (C, H, W)
-    image_padded = np.expand_dims(image_padded, axis=0)  # 배치 차원 추가
+
+    print("Final shape before CUDA:", image_padded.shape)  # ✅ (1, 3, 640, 640) 확인
 
     # TensorRT 실행
     d_input = cuda.mem_alloc(image_padded.nbytes)
-    d_output = cuda.mem_alloc(1000000)  # 충분한 크기 확보 (출력 크기에 맞게 설정 필요)
+
+    # ✅ 엔진에서 출력 텐서 크기 가져오기
+    output_shape = context.get_binding_shape(1)  # 1번 인덱스가 출력 텐서
+    output_size = np.prod(output_shape) * np.dtype(np.float32).itemsize  # 총 바이트 수 계산
+    d_output = cuda.mem_alloc(int(output_size))  # ✅ 정확한 크기 설정
+
     bindings = [int(d_input), int(d_output)]
     stream = cuda.Stream()
+
+    # 입력 데이터 복사
     cuda.memcpy_htod_async(d_input, image_padded, stream)
     context.execute_async_v2(bindings=bindings, stream_handle=stream.handle)
-    cuda.memcpy_dtoh_async(image_padded, d_output, stream)
+
+    # ✅ 출력 데이터를 위한 새로운 배열 생성
+    h_output = np.empty(output_shape, dtype=np.float32)  # 모델 출력 크기와 동일한 형태
+
+    # ✅ GPU → CPU로 출력 데이터 복사
+    cuda.memcpy_dtoh_async(h_output, d_output, stream)
     stream.synchronize()
 
-    # 후처리 적용
-    final_bboxes, final_scores, final_class_ids = postprocess(image_padded, img_shape)
+    # ✅ 후처리 함수에서 h_output을 사용하도록 수정
+    final_bboxes, final_scores, final_class_ids = postprocess(h_output, img_shape)
 
     # 기존 YOLO `results` 객체처럼 변환
     results = [DetectionResult(final_bboxes, final_scores, final_class_ids)]
