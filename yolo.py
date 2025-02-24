@@ -26,30 +26,49 @@ model path: 가중치, onnx_path: onnx 파일 저장할 경로
 output: onnx_path 뱉는 함수
 
 """
+# def convert_yolo_to_onnx(model_path=Config.model_path, onnx_path=Config.onnx_path):
+#     """Ultralytics YOLOv8 → ONNX 변환"""
 
-# def convert_yolo_to_onnx(model_path, onnx_path=Config.onnx_path, input_size=(1, 3, 640, 640)):
-#     """ PyTorch YOLO 모델을 ONNX로 변환하는 함수 """
-#     model = YOLO(model_path)  # 모델 로드
-#     model.eval()  # 추론 모드로 설정
+#     print(f"🔹 [ONNX 변환 시작] 모델 로드 중: {model_path}")
 
-#     # 더미 입력 (YOLO는 640x640 기본)
-#     dummy_input = torch.randn(*input_size).cuda()
+#     input_size = (1, 3, 640, 640)
+    
+#     try:
+#         model = YOLO(model_path)
+#         model.model.to("cuda")
+#         print("✅ 모델 로드 완료")
+#     except Exception as e:
+#         print(f"❌ 모델 로드 실패: {e}")
+#         return
+    
+#     model.eval()  # 추론 모드 설정
+#     dummy_input = torch.randn(*input_size).cuda()  # 더미 입력 (배치 1, 3채널, 640x640)
 
-#     # ONNX 변환
-#     torch.onnx.export(
-#         model.model,
-#         dummy_input, 
-#         onnx_path, 
-#         opset_version=11, 
-#         input_names=["input"], 
-#         output_names=["output"]
-#     )
-#     print(f"✅ ONNX 변환 완료: {onnx_path}")
+#     print("🔹 [ONNX 변환 진행 중] torch.onnx.export 실행")
+    
+#     try:
+#         torch.onnx.export(
+#             model.model,  # ✅ `model.model`을 사용해야 PyTorch → ONNX 변환 가능
+#             dummy_input, 
+#             onnx_path, 
+#             opset_version=11, 
+#             input_names=["images"], 
+#             output_names=["output"]
+#         )
+#         print(f"✅ ONNX 변환 완료: {onnx_path}")
+#     except Exception as e:
+#         print(f"❌ ONNX 변환 실패: {e}")
+#         return
+    
 #     return onnx_path
 
-def convert_yolo_to_onnx(model_path=Config.model_path, onnx_path=Config.onnx_path):
+
+def convert_yolo_to_onnx(model_path=Config.model_path, onnx_path=None):
     """Ultralytics YOLOv8 → ONNX 변환"""
 
+
+    if onnx_path is None:
+        onnx_path = os.path.join(Config.current_path, "data", "yolo_model.onnx")
     print(f"🔹 [ONNX 변환 시작] 모델 로드 중: {model_path}")
 
     input_size = (1, 3, 640, 640)

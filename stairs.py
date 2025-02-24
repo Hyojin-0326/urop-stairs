@@ -2,7 +2,6 @@ import torch
 import cv2
 import numpy as np
 import utils
-import main
 import open3d as o3d
 
 
